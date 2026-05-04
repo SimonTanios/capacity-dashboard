@@ -1,0 +1,4 @@
+﻿TimeWindow,period_midpoint,total_entities_assessed,number_entities_with_country_capacity_evidence,share_entities_with_country_capacity_evidence,average_documented_country_capacity_score_all_entities,average_documented_country_capacity_score_entities_with_evidence,number_no_documented_capacity_evidence_entities,number_minimal_documented_capacity_evidence_entities,number_low_documented_capacity_evidence_entities,number_moderate_documented_capacity_evidence_entities,number_strong_documented_capacity_evidence_entities,number_very_strong_documented_capacity_evidence_entities
+2014-2018,2016,9,9,1.0,58.47,58.47,0,0,0,4,5,0
+2018-2022,2020,8,8,1.0,54.94,54.94,0,0,0,6,2,0
+2022-2026,2024,10,10,1.0,58.29,58.29,0,0,0,5,5,0
