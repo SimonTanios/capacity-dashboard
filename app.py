@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import ast
+import re
 from pathlib import Path
-
 
 # ------------------------------------------------------------
 # PAGE CONFIG
@@ -14,7 +14,6 @@ st.set_page_config(
     page_icon="🌍",
     layout="wide"
 )
-
 
 # ------------------------------------------------------------
 # DATA PATHS
@@ -31,6 +30,9 @@ COUNTRY_CAPACITY_DOCS = DATA_DIR / "country_capacity_doc_level_deduped.csv"
 UNEP_CAPACITY_PERIOD = DATA_DIR / "capacity_country_period_summary.csv"
 UNEP_CAPACITY_INDICATOR = DATA_DIR / "capacity_indicator_summary.csv"
 UNEP_CAPACITY_DOCS = DATA_DIR / "capacity_doc_level_deduped.csv"
+
+# Indicator 4.2 Overton candidate evidence file
+OVERTON_42_FILE = DATA_DIR / "overton_42_government_unep_candidates.csv"
 
 
 # ------------------------------------------------------------
@@ -51,6 +53,8 @@ country_docs = load_csv(COUNTRY_CAPACITY_DOCS)
 unep_period = load_csv(UNEP_CAPACITY_PERIOD)
 unep_indicator = load_csv(UNEP_CAPACITY_INDICATOR)
 unep_docs = load_csv(UNEP_CAPACITY_DOCS)
+
+overton_42_raw = load_csv(OVERTON_42_FILE)
 
 
 # ------------------------------------------------------------
@@ -131,7 +135,7 @@ def filter_country_capacity_docs(docs_df, country, period):
     df = df[
         (df["Entity"] == country)
         & (df["TimeWindow"] == period)
-    ].copy()
+        ].copy()
 
     if df.empty:
         return df
@@ -170,7 +174,7 @@ def filter_unep_capacity_docs(docs_df, country, period):
     df = df[
         (df["Entity"] == country)
         & (df["TimeWindow"] == period)
-    ].copy()
+        ].copy()
 
     if df.empty:
         return df
@@ -203,10 +207,157 @@ def filter_unep_capacity_docs(docs_df, country, period):
 
 
 # ------------------------------------------------------------
-# SIDEBAR FILTERS
+# INDICATOR 4.2 / OVERTON HELPERS
 # ------------------------------------------------------------
 
-st.sidebar.title("Filters")
+def parse_year(value):
+    if pd.isna(value):
+        return None
+
+    text = str(value)
+    match = re.search(r"(20\d{2}|19\d{2})", text)
+
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def assign_indicator_42_period(year):
+    if pd.isna(year) or year is None:
+        return "Unknown"
+
+    year = int(year)
+
+    if 2014 <= year <= 2018:
+        return "2014-2018"
+    elif 2019 <= year <= 2022:
+        return "2019-2022"
+    elif 2023 <= year <= 2026:
+        return "2023-2026"
+    else:
+        return "Outside dashboard periods"
+
+
+def classify_overton_candidate_priority(row):
+    """
+    Transparent rule-based triage for Indicator 4.2 candidate evidence.
+
+    This is NOT final AI classification.
+    It only prioritizes candidate records based on metadata completeness.
+    """
+
+    score = 0
+
+    source_org_type = str(safe_get(row, "Source organisation type", "")).lower()
+    source_sector = str(safe_get(row, "Source sector", "")).lower()
+    doc_url = str(safe_get(row, "Document URL", "")).strip()
+    country = str(safe_get(row, "Source country", "")).strip()
+    source_title = str(safe_get(row, "Source title", "")).strip()
+    topics = str(safe_get(row, "Top topics", "")).strip()
+    sdgs = str(safe_get(row, "Related to SDGs", "")).strip()
+    theme = str(safe_get(row, "Document theme", "")).strip()
+
+    if "government" in source_org_type:
+        score += 30
+
+    if "public sector" in source_sector:
+        score += 20
+
+    if source_title:
+        score += 10
+
+    if doc_url:
+        score += 15
+
+    if country:
+        score += 10
+
+    if topics:
+        score += 5
+
+    if sdgs:
+        score += 5
+
+    if theme:
+        score += 5
+
+    if score >= 80:
+        return "High-priority candidate evidence"
+    elif score >= 60:
+        return "Moderate-priority candidate evidence"
+    elif score > 0:
+        return "Low-priority candidate evidence"
+    else:
+        return "Insufficient metadata"
+
+
+def prepare_overton_42_data(df):
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    needed_cols = [
+        "Overton id",
+        "Title",
+        "Translated title",
+        "Document type",
+        "Source title",
+        "Source country",
+        "Source state",
+        "Source sector",
+        "Source organisation type",
+        "Source function",
+        "Published_on",
+        "Policy citations (excl. same source)",
+        "Policy citations (inc. same source)",
+        "Document URL",
+        "Overton URL",
+        "Source specific tags",
+        "Your tags",
+        "Top topics",
+        "Languages",
+        "Policy authors",
+        "Related to SDGs",
+        "Document theme"
+    ]
+
+    for col in needed_cols:
+        if col not in df.columns:
+            df[col] = ""
+
+    df["published_year"] = df["Published_on"].apply(parse_year)
+    df["TimeWindow_42"] = df["published_year"].apply(assign_indicator_42_period)
+
+    # In this indicator, the user entity is the government/institution source.
+    df["User_entity_42"] = df["Source title"].fillna("").astype(str)
+
+    # Country/territory used for mapping.
+    df["Entity_42"] = df["Source country"].fillna("").astype(str)
+
+    # This is the raw Overton source layer.
+    df["SourceLayer"] = "Overton"
+
+    # Candidate status: the export was already filtered in Overton for government source + UNEP connection.
+    df["indicator_42_candidate"] = True
+
+    # Metadata-based triage label.
+    df["candidate_evidence_priority_42"] = df.apply(classify_overton_candidate_priority, axis=1)
+
+    return df
+
+
+overton_42 = prepare_overton_42_data(overton_42_raw)
+
+# ------------------------------------------------------------
+# GLOBAL LISTS FOR TAB FILTERS
+# ------------------------------------------------------------
+
+# The dashboard does not use global sidebar filters.
+# Capacity sections use their own filters inside their tabs.
+# Indicator 4.2 uses separate filters inside the Indicator 4.2 tabs.
 
 all_periods = sorted(
     list(
@@ -215,23 +366,12 @@ all_periods = sorted(
     )
 )
 
-selected_period = st.sidebar.selectbox(
-    "Select period",
-    all_periods if all_periods else ["No data"]
-)
-
 all_countries = sorted(
     list(
         set(country_period.get("Entity", pd.Series(dtype=str)).dropna().unique())
         | set(unep_period.get("Entity", pd.Series(dtype=str)).dropna().unique())
     )
 )
-
-selected_country = st.sidebar.selectbox(
-    "Select country",
-    all_countries if all_countries else ["No data"]
-)
-
 
 # ------------------------------------------------------------
 # TABS
@@ -244,9 +384,11 @@ tabs = st.tabs([
     "UNEP-attributed Capacity",
     "Country-Period Report",
     "Evidence Explorer",
+    "Indicator 4.2 Overview",
+    "Indicator 4.2 Map",
+    "Indicator 4.2 Evidence Report",
     "Methodology"
 ])
-
 
 # ------------------------------------------------------------
 # TAB 1: EXECUTIVE OVERVIEW
@@ -349,7 +491,6 @@ with tabs[0]:
         else:
             st.warning("UNEP-attributed indicator file not found or empty.")
 
-
 # ------------------------------------------------------------
 # TAB 2: COUNTRIES ASSESSED MAP
 # ------------------------------------------------------------
@@ -381,7 +522,6 @@ with tabs[1]:
 
         st.dataframe(map_base, use_container_width=True)
 
-
 # ------------------------------------------------------------
 # TAB 3: COUNTRY CAPACITY
 # ------------------------------------------------------------
@@ -392,15 +532,21 @@ with tabs[2]:
     if country_period.empty:
         st.warning("No country capacity data available.")
     else:
-        dfp = country_period[country_period["TimeWindow"] == selected_period].copy()
+        selected_period_capacity = st.selectbox(
+            "Select country-capacity period",
+            all_periods if all_periods else ["No data"],
+            key="country_capacity_period_filter"
+        )
+
+        dfp = country_period[country_period["TimeWindow"] == selected_period_capacity].copy()
 
         if dfp.empty:
-            st.warning(f"No country capacity data for {selected_period}.")
+            st.warning(f"No country capacity data for {selected_period_capacity}.")
         else:
             score_col = "Ci_t_country_capacity"
             label_col = "capacity_score_4_range_category"
 
-            st.subheader(f"Country capacity map — {selected_period}")
+            st.subheader(f"Country capacity map — {selected_period_capacity}")
 
             fig = px.choropleth(
                 dfp,
@@ -418,7 +564,7 @@ with tabs[2]:
                 ],
                 color_continuous_scale="Viridis",
                 range_color=[0, 100],
-                title=f"Average documented country capacity evidence score — {selected_period}"
+                title=f"Average documented country capacity evidence score — {selected_period_capacity}"
             )
 
             fig.update_layout(
@@ -448,7 +594,6 @@ with tabs[2]:
                 use_container_width=True
             )
 
-
 # ------------------------------------------------------------
 # TAB 4: UNEP-ATTRIBUTED CAPACITY
 # ------------------------------------------------------------
@@ -459,15 +604,21 @@ with tabs[3]:
     if unep_period.empty:
         st.warning("No UNEP-attributed capacity data available.")
     else:
-        dfu = unep_period[unep_period["TimeWindow"] == selected_period].copy()
+        selected_period_unep = st.selectbox(
+            "Select UNEP-attributed capacity period",
+            all_periods if all_periods else ["No data"],
+            key="unep_capacity_period_filter"
+        )
+
+        dfu = unep_period[unep_period["TimeWindow"] == selected_period_unep].copy()
 
         if dfu.empty:
-            st.warning(f"No UNEP-attributed capacity data for {selected_period}.")
+            st.warning(f"No UNEP-attributed capacity data for {selected_period_unep}.")
         else:
             score_col = "Ci_t_UNEP"
             label_col = "extent_of_unep_attributed_capacity_evidence"
 
-            st.subheader(f"UNEP-attributed capacity map — {selected_period}")
+            st.subheader(f"UNEP-attributed capacity map — {selected_period_unep}")
 
             fig = px.choropleth(
                 dfu,
@@ -485,7 +636,7 @@ with tabs[3]:
                 ],
                 color_continuous_scale="YlGn",
                 range_color=[0, 100],
-                title=f"UNEP-attributed capacity evidence score — {selected_period}"
+                title=f"UNEP-attributed capacity evidence score — {selected_period_unep}"
             )
 
             fig.update_layout(
@@ -517,7 +668,6 @@ with tabs[3]:
                 use_container_width=True
             )
 
-
 # ------------------------------------------------------------
 # TAB 5: COUNTRY-PERIOD REPORT
 # ------------------------------------------------------------
@@ -532,17 +682,33 @@ with tabs[4]:
         """
     )
 
+    filter_col1, filter_col2 = st.columns(2)
+
+    with filter_col1:
+        selected_period_report = st.selectbox(
+            "Select report period",
+            all_periods if all_periods else ["No data"],
+            key="country_period_report_period_filter"
+        )
+
+    with filter_col2:
+        selected_country_report = st.selectbox(
+            "Select report country",
+            all_countries if all_countries else ["No data"],
+            key="country_period_report_country_filter"
+        )
+
     country_data = country_period[
-        (country_period.get("Entity", "") == selected_country)
-        & (country_period.get("TimeWindow", "") == selected_period)
-    ]
+        (country_period.get("Entity", "") == selected_country_report)
+        & (country_period.get("TimeWindow", "") == selected_period_report)
+        ]
 
     unep_data = unep_period[
-        (unep_period.get("Entity", "") == selected_country)
-        & (unep_period.get("TimeWindow", "") == selected_period)
-    ]
+        (unep_period.get("Entity", "") == selected_country_report)
+        & (unep_period.get("TimeWindow", "") == selected_period_report)
+        ]
 
-    st.subheader(f"{selected_country} — {selected_period}")
+    st.subheader(f"{selected_country_report} — {selected_period_report}")
 
     col1, col2 = st.columns(2)
 
@@ -680,7 +846,7 @@ with tabs[4]:
 
         st.write(
             f"""
-            For **{selected_country}** during **{selected_period}**, the dashboard identifies
+            For **{selected_country_report}** during **{selected_period_report}**, the dashboard identifies
             a documented country capacity evidence score of **{capacity_score}** and a
             UNEP-attributed capacity evidence score of **{unep_score}**.
 
@@ -708,14 +874,14 @@ with tabs[4]:
 
     country_evidence = filter_country_capacity_docs(
         country_docs,
-        selected_country,
-        selected_period
+        selected_country_report,
+        selected_period_report
     )
 
     unep_evidence = filter_unep_capacity_docs(
         unep_docs,
-        selected_country,
-        selected_period
+        selected_country_report,
+        selected_period_report
     )
 
     # -----------------------------
@@ -788,7 +954,7 @@ with tabs[4]:
             phrases = parse_evidence_phrases(safe_get(row, "evidence_phrases", "[]"))
 
             with st.expander(
-                f"🌱 {title} — UNEP-attributed contribution score: {contribution_score}"
+                    f"🌱 {title} — UNEP-attributed contribution score: {contribution_score}"
             ):
                 if link:
                     st.markdown(f"**Source link:** [Open document]({link})")
@@ -822,8 +988,8 @@ with tabs[4]:
     report_lines = []
 
     report_lines.append("# Evidence Highlights Report")
-    report_lines.append(f"Country: {selected_country}")
-    report_lines.append(f"Period: {selected_period}")
+    report_lines.append(f"Country: {selected_country_report}")
+    report_lines.append(f"Period: {selected_period_report}")
     report_lines.append("")
     report_lines.append("## General country capacity evidence")
 
@@ -897,10 +1063,9 @@ with tabs[4]:
     st.download_button(
         "Download country-period evidence highlights report",
         report_text,
-        file_name=f"{selected_country}_{selected_period}_evidence_highlights.md".replace(" ", "_"),
+        file_name=f"{selected_country_report}_{selected_period_report}_evidence_highlights.md".replace(" ", "_"),
         mime="text/markdown"
     )
-
 
 # ------------------------------------------------------------
 # TAB 6: EVIDENCE EXPLORER
@@ -947,7 +1112,7 @@ with tabs[5]:
         filtered = evidence_df[
             (evidence_df["Entity"] == evidence_country)
             & (evidence_df["TimeWindow"] == evidence_period)
-        ].copy()
+            ].copy()
 
         if keyword:
             keyword_lower = keyword.lower()
@@ -1000,12 +1165,380 @@ with tabs[5]:
             mime="text/csv"
         )
 
-
 # ------------------------------------------------------------
 # TAB 7: METHODOLOGY
 # ------------------------------------------------------------
 
+# ------------------------------------------------------------
+# TAB 7: INDICATOR 4.2 OVERVIEW
+# ------------------------------------------------------------
+
 with tabs[6]:
+    st.header("📌 Indicator 4.2 Overview — UNEP Knowledge Use")
+
+    st.markdown(
+        """
+        **Indicator 4.2:** Number of governments and institutions that use UNEP knowledge,
+        data, statistics and scientific assessments to catalyse policymaking and action.
+
+        This section uses the Overton export as a **candidate evidence base**. The records
+        come from government/public-sector sources connected to UNEP through citation or mention.
+
+        These results should be interpreted as **candidate evidence**, not yet as a final
+        validated official count.
+        """
+    )
+
+    if overton_42.empty:
+        st.warning(
+            """
+            No Overton data found. Please add this file:
+
+            `data/overton_42_government_unep_candidates.csv`
+            """
+        )
+    else:
+        valid_42 = overton_42[
+            overton_42["TimeWindow_42"] != "Outside dashboard periods"
+            ].copy()
+
+        periods_42 = sorted(valid_42["TimeWindow_42"].dropna().unique())
+
+        selected_period_42_overview = st.selectbox(
+            "Select Indicator 4.2 period",
+            periods_42,
+            key="period_42_overview"
+        )
+
+        df42 = valid_42[
+            valid_42["TimeWindow_42"] == selected_period_42_overview
+            ].copy()
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Candidate documents", len(df42))
+        c2.metric("Countries / territories", df42["Entity_42"].nunique())
+        c3.metric("Governments / institutions", df42["User_entity_42"].nunique())
+        c4.metric(
+            "High-priority candidates",
+            int((df42["candidate_evidence_priority_42"] == "High-priority candidate evidence").sum())
+        )
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            period_summary_42 = (
+                valid_42
+                .groupby("TimeWindow_42")
+                .agg(
+                    candidate_documents=("Overton id", "count"),
+                    countries_or_territories=("Entity_42", "nunique"),
+                    governments_or_institutions=("User_entity_42", "nunique")
+                )
+                .reset_index()
+            )
+
+            fig = px.bar(
+                period_summary_42,
+                x="TimeWindow_42",
+                y="governments_or_institutions",
+                text="governments_or_institutions",
+                title="Candidate governments/institutions by period"
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            priority_summary_42 = (
+                df42["candidate_evidence_priority_42"]
+                .value_counts()
+                .reset_index()
+            )
+
+            priority_summary_42.columns = ["candidate_evidence_priority_42", "count"]
+
+            fig = px.pie(
+                priority_summary_42,
+                names="candidate_evidence_priority_42",
+                values="count",
+                title="Candidate evidence priority"
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Top countries / territories")
+
+        country_summary_42 = (
+            df42
+            .groupby("Entity_42")
+            .agg(
+                candidate_documents=("Overton id", "count"),
+                governments_or_institutions=("User_entity_42", "nunique")
+            )
+            .reset_index()
+            .sort_values("candidate_documents", ascending=False)
+        )
+
+        st.dataframe(country_summary_42, use_container_width=True)
+
+# ------------------------------------------------------------
+# TAB 8: INDICATOR 4.2 MAP
+# ------------------------------------------------------------
+
+with tabs[7]:
+    st.header("🗺️ Indicator 4.2 Candidate Evidence Map")
+
+    if overton_42.empty:
+        st.warning("No Overton Indicator 4.2 data found.")
+    else:
+        valid_42 = overton_42[
+            overton_42["TimeWindow_42"] != "Outside dashboard periods"
+            ].copy()
+
+        periods_42 = sorted(valid_42["TimeWindow_42"].dropna().unique())
+
+        selected_period_42_map = st.selectbox(
+            "Select Indicator 4.2 period",
+            periods_42,
+            key="period_42_map"
+        )
+
+        df42 = valid_42[
+            valid_42["TimeWindow_42"] == selected_period_42_map
+            ].copy()
+
+        map_df42 = (
+            df42
+            .groupby("Entity_42")
+            .agg(
+                candidate_documents=("Overton id", "count"),
+                governments_or_institutions=("User_entity_42", "nunique")
+            )
+            .reset_index()
+        )
+
+        if map_df42.empty:
+            st.warning("No Indicator 4.2 candidate evidence for this period.")
+        else:
+            fig = px.choropleth(
+                map_df42,
+                locations="Entity_42",
+                locationmode="country names",
+                color="governments_or_institutions",
+                hover_name="Entity_42",
+                hover_data=[
+                    "candidate_documents",
+                    "governments_or_institutions"
+                ],
+                color_continuous_scale="YlGn",
+                title=f"Indicator 4.2 candidate governments/institutions — {selected_period_42_map}"
+            )
+
+            fig.update_layout(
+                geo=dict(showframe=False, showcoastlines=True),
+                height=650
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("Map data table")
+            st.dataframe(
+                map_df42.sort_values("governments_or_institutions", ascending=False),
+                use_container_width=True
+            )
+
+# ------------------------------------------------------------
+# TAB 9: INDICATOR 4.2 EVIDENCE REPORT
+# ------------------------------------------------------------
+
+with tabs[8]:
+    st.header("📄 Indicator 4.2 Evidence Report")
+
+    if overton_42.empty:
+        st.warning("No Overton Indicator 4.2 data found.")
+    else:
+        valid_42 = overton_42[
+            overton_42["TimeWindow_42"] != "Outside dashboard periods"
+            ].copy()
+
+        periods_42 = sorted(valid_42["TimeWindow_42"].dropna().unique())
+
+        selected_period_42_report = st.selectbox(
+            "Select Indicator 4.2 period",
+            periods_42,
+            key="period_42_report"
+        )
+
+        countries_42 = sorted([
+            c for c in valid_42["Entity_42"].dropna().unique()
+            if str(c).strip()
+        ])
+
+        selected_country_42_report = st.selectbox(
+            "Select country / territory",
+            ["All"] + countries_42,
+            key="country_42_report"
+        )
+
+        priorities_42 = sorted(valid_42["candidate_evidence_priority_42"].dropna().unique())
+
+        selected_priorities_42 = st.multiselect(
+            "Evidence priority",
+            priorities_42,
+            default=priorities_42,
+            key="priority_42_report"
+        )
+
+        keyword_42 = st.text_input(
+            "Keyword search in title, theme, topics, SDGs",
+            "",
+            key="keyword_42_report"
+        )
+
+        df42 = valid_42[
+            valid_42["TimeWindow_42"] == selected_period_42_report
+            ].copy()
+
+        if selected_country_42_report != "All":
+            df42 = df42[df42["Entity_42"] == selected_country_42_report]
+
+        if selected_priorities_42:
+            df42 = df42[
+                df42["candidate_evidence_priority_42"].isin(selected_priorities_42)
+            ]
+
+        if keyword_42:
+            keyword_lower = keyword_42.lower()
+
+            text_cols_42 = [
+                "Title",
+                "Translated title",
+                "Source title",
+                "Source country",
+                "Top topics",
+                "Related to SDGs",
+                "Document theme",
+                "Policy authors"
+            ]
+
+            mask = pd.Series(False, index=df42.index)
+
+            for col in text_cols_42:
+                if col in df42.columns:
+                    mask = mask | df42[col].astype(str).str.lower().str.contains(keyword_lower, na=False)
+
+            df42 = df42[mask]
+
+        st.subheader(f"Indicator 4.2 candidate evidence — {selected_period_42_report}")
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("Candidate documents", len(df42))
+        c2.metric("Countries / territories", df42["Entity_42"].nunique())
+        c3.metric("Governments / institutions", df42["User_entity_42"].nunique())
+
+        st.markdown("### Executive interpretation")
+
+        st.write(
+            f"""
+            For the selected filters, the Overton export identifies **{len(df42)}**
+            candidate policy documents from **{df42['User_entity_42'].nunique()}**
+            government/public-sector institution(s), across **{df42['Entity_42'].nunique()}**
+            country/territory source(s).
+
+            These records are relevant as candidate evidence for Indicator 4.2 because they
+            come from government/public-sector sources connected to UNEP. They should still be
+            reviewed or classified to confirm whether the document substantively uses UNEP
+            knowledge, data, statistics or scientific assessments to support policymaking or action.
+            """
+        )
+
+        st.markdown("### Evidence highlights")
+
+        df42 = df42.sort_values(
+            by=["candidate_evidence_priority_42", "published_year"],
+            ascending=[True, False]
+        )
+
+        for _, row in df42.iterrows():
+            title = safe_get(row, "Title", "Untitled document")
+            source = safe_get(row, "Source title", "Unknown source")
+            country = safe_get(row, "Source country", "Unknown country")
+            year = safe_get(row, "published_year", "Unknown year")
+            priority = safe_get(row, "candidate_evidence_priority_42", "Candidate evidence")
+            doc_url = safe_get(row, "Document URL", "")
+            overton_url = safe_get(row, "Overton URL", "")
+            theme = safe_get(row, "Document theme", "")
+            topics = safe_get(row, "Top topics", "")
+            sdgs = safe_get(row, "Related to SDGs", "")
+            language = safe_get(row, "Languages", "")
+
+            with st.expander(f"📄 {title} — {source} — {country} — {year}"):
+                st.write("**Candidate evidence priority:**", priority)
+                st.write("**Source institution:**", source)
+                st.write("**Source country / territory:**", country)
+                st.write("**Document type:**", safe_get(row, "Document type", ""))
+                st.write("**Published:**", safe_get(row, "Published_on", ""))
+                st.write("**Language:**", language)
+
+                if doc_url:
+                    st.markdown(f"**Document URL:** [Open document]({doc_url})")
+
+                if overton_url:
+                    st.markdown(f"**Overton URL:** [Open in Overton]({overton_url})")
+
+                st.write("**Document theme:**", theme)
+                st.write("**Top topics:**", topics)
+                st.write("**Related SDGs:**", sdgs)
+
+                st.info(
+                    """
+                    Candidate evidence only. Review/classify this document to confirm whether it
+                    substantively uses UNEP knowledge, data, statistics or scientific assessments
+                    to catalyse policymaking or action.
+                    """
+                )
+
+        st.markdown("### Download filtered Indicator 4.2 evidence")
+
+        display_cols_42 = [
+            c for c in [
+                "Overton id",
+                "Title",
+                "Translated title",
+                "Document type",
+                "Source title",
+                "Source country",
+                "Source sector",
+                "Source organisation type",
+                "Source function",
+                "Published_on",
+                "published_year",
+                "TimeWindow_42",
+                "candidate_evidence_priority_42",
+                "Document URL",
+                "Overton URL",
+                "Top topics",
+                "Languages",
+                "Policy authors",
+                "Related to SDGs",
+                "Document theme",
+                "SourceLayer"
+            ] if c in df42.columns
+        ]
+
+        csv_download_42 = df42[display_cols_42].to_csv(index=False, encoding="utf-8-sig")
+
+        st.download_button(
+            "Download filtered Indicator 4.2 candidate evidence CSV",
+            csv_download_42,
+            file_name="indicator_42_filtered_candidate_evidence.csv",
+            mime="text/csv"
+        )
+
+with tabs[9]:
     st.header("📘 Methodology")
 
     st.markdown(
@@ -1051,5 +1584,26 @@ with tabs[6]:
         generated by the analysis pipeline. The evidence report section allows users to see
         not only the best evidence document, but all relevant evidence documents available
         for the selected country and period.
+
+        ### 6. Indicator 4.2 Overton candidate evidence
+
+        The dashboard also includes a new section for Indicator 4.2:
+
+        **Number of governments and institutions that use UNEP knowledge, data, statistics and scientific assessments to catalyse policymaking and action.**
+
+        The Indicator 4.2 section uses an Overton export saved as:
+
+        `data/overton_42_government_unep_candidates.csv`
+
+        The export is treated as a candidate evidence base because it contains government/public-sector policy documents connected to UNEP through citation or mention.
+
+        These results should not yet be treated as final official counts. A further classification step is needed to confirm:
+
+        - whether UNEP knowledge, data, statistics or assessments are substantively used;
+        - whether the use is linked to policymaking or action;
+        - which government or institution is using the evidence;
+        - which UNEP knowledge product or source is being used;
+        - what evidence phrase supports the classification.
         """
     )
+
